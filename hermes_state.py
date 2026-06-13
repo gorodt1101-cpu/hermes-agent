@@ -581,12 +581,31 @@ CREATE TABLE IF NOT EXISTS compression_locks (
     expires_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS spend_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp REAL NOT NULL,
+    session_id TEXT,
+    provider TEXT,
+    model TEXT,
+    base_url TEXT,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
+    reasoning_tokens INTEGER DEFAULT 0,
+    cost_usd REAL,
+    cost_status TEXT,
+    cost_source TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+CREATE INDEX IF NOT EXISTS idx_spend_log_ts ON spend_log(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_spend_log_session ON spend_log(session_id);
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -4083,6 +4102,93 @@ class SessionDB:
                 (key, value),
             )
         self._execute_write(_do)
+
+    def log_spend(
+        self,
+        *,
+        session_id: Optional[str],
+        provider: Optional[str],
+        model: Optional[str],
+        base_url: Optional[str],
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_write_tokens: int,
+        reasoning_tokens: int,
+        cost_usd: Optional[float],
+        cost_status: Optional[str],
+        cost_source: Optional[str],
+    ) -> None:
+        """Append one row to spend_log capturing a single paid LLM API call."""
+        import time as _time
+        def _do(conn):
+            conn.execute(
+                "INSERT INTO spend_log ("
+                "timestamp, session_id, provider, model, base_url, "
+                "input_tokens, output_tokens, cache_read_tokens, "
+                "cache_write_tokens, reasoning_tokens, "
+                "cost_usd, cost_status, cost_source"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    _time.time(), session_id, provider, model, base_url,
+                    int(input_tokens or 0), int(output_tokens or 0),
+                    int(cache_read_tokens or 0), int(cache_write_tokens or 0),
+                    int(reasoning_tokens or 0),
+                    float(cost_usd) if cost_usd is not None else None,
+                    cost_status, cost_source,
+                ),
+            )
+        self._execute_write(_do)
+
+    def query_spend_summary(self) -> Dict[str, Any]:
+        """Return spend totals for today / week / month / all-time.
+
+        Each bucket has ``total_usd``, ``calls``, and ``by_model`` (a list of
+        ``{provider, model, cost_usd, calls}`` rows sorted by cost desc).
+        """
+        import time as _time
+        now = _time.time()
+        day_ago = now - 86400
+        week_ago = now - 7 * 86400
+        month_ago = now - 30 * 86400
+
+        def _bucket(since: float) -> Dict[str, Any]:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT COALESCE(SUM(cost_usd), 0) AS total, COUNT(*) AS calls "
+                    "FROM spend_log WHERE timestamp >= ?",
+                    (since,),
+                ).fetchone()
+                total = row["total"] if isinstance(row, sqlite3.Row) else row[0]
+                calls = row["calls"] if isinstance(row, sqlite3.Row) else row[1]
+                rows = self._conn.execute(
+                    "SELECT provider, model, "
+                    "COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS n "
+                    "FROM spend_log WHERE timestamp >= ? "
+                    "GROUP BY provider, model "
+                    "ORDER BY cost DESC, n DESC",
+                    (since,),
+                ).fetchall()
+            by_model = []
+            for r in rows:
+                if isinstance(r, sqlite3.Row):
+                    by_model.append({
+                        "provider": r["provider"], "model": r["model"],
+                        "cost_usd": r["cost"], "calls": r["n"],
+                    })
+                else:
+                    by_model.append({
+                        "provider": r[0], "model": r[1],
+                        "cost_usd": r[2], "calls": r[3],
+                    })
+            return {"total_usd": float(total or 0), "calls": int(calls or 0), "by_model": by_model}
+
+        return {
+            "today": _bucket(day_ago),
+            "week": _bucket(week_ago),
+            "month": _bucket(month_ago),
+            "all_time": _bucket(0),
+        }
 
     def apply_telegram_topic_migration(self) -> None:
         """Create Telegram DM topic-mode tables on explicit /topic opt-in.

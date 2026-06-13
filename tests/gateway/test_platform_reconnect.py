@@ -53,6 +53,7 @@ def _make_runner():
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="test")}
     )
     runner._running = True
+    runner._draining = False
     runner._shutdown_event = asyncio.Event()
     runner._exit_reason = None
     runner._exit_with_failure = False
@@ -543,6 +544,24 @@ class TestRuntimeDisconnectQueuing:
 
         assert Platform.TELEGRAM in runner._failed_platforms
         assert runner._failed_platforms[Platform.TELEGRAM]["attempts"] == 0
+
+    @pytest.mark.asyncio
+    async def test_retryable_runtime_error_during_shutdown_not_queued(self):
+        """Shutdown-driven adapter disconnects must not resurrect the platform."""
+        runner = _make_runner()
+        runner._running = False
+        runner._draining = True
+        runner.stop = AsyncMock()
+
+        adapter = StubAdapter(succeed=True)
+        adapter._set_fatal_error("network_error", "polling stopped", retryable=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        await runner._handle_adapter_fatal_error(adapter)
+
+        assert Platform.TELEGRAM not in runner._failed_platforms
+        assert Platform.TELEGRAM not in runner.adapters
+        runner.stop.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_nonretryable_runtime_error_not_queued(self):

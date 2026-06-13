@@ -1632,10 +1632,45 @@ def run_conversation(
                         base_url=agent.base_url,
                         api_key=getattr(agent, "api_key", ""),
                     )
-                    if cost_result.amount_usd is not None:
-                        agent.session_estimated_cost_usd += float(cost_result.amount_usd)
+                    _call_cost = (
+                        float(cost_result.amount_usd)
+                        if cost_result.amount_usd is not None
+                        else None
+                    )
+                    if _call_cost is not None:
+                        agent.session_estimated_cost_usd += _call_cost
                     agent.session_cost_status = cost_result.status
                     agent.session_cost_source = cost_result.source
+
+                    # Per-call snapshot for inline cost display + spend_log.
+                    agent.last_call_cost_usd = _call_cost
+                    agent.last_call_cost_status = cost_result.status
+                    agent.last_call_cost_source = cost_result.source
+                    agent.last_call_provider = agent.provider
+                    agent.last_call_model = agent.model
+                    agent.last_call_input_tokens = canonical_usage.input_tokens
+                    agent.last_call_output_tokens = canonical_usage.output_tokens
+
+                    # Append the spend row.  Best-effort: a write failure here
+                    # must never abort the turn (e.g. SQLite locked under cron).
+                    if agent._session_db is not None:
+                        try:
+                            agent._session_db.log_spend(
+                                session_id=agent.session_id,
+                                provider=agent.provider,
+                                model=agent.model,
+                                base_url=agent.base_url,
+                                input_tokens=canonical_usage.input_tokens,
+                                output_tokens=canonical_usage.output_tokens,
+                                cache_read_tokens=canonical_usage.cache_read_tokens,
+                                cache_write_tokens=canonical_usage.cache_write_tokens,
+                                reasoning_tokens=canonical_usage.reasoning_tokens,
+                                cost_usd=_call_cost,
+                                cost_status=cost_result.status,
+                                cost_source=cost_result.source,
+                            )
+                        except Exception as _spend_exc:
+                            logger.debug("spend_log write failed: %s", _spend_exc)
 
                     # Persist token counts to session DB for /insights.
                     # Do this for every platform with a session_id so non-CLI

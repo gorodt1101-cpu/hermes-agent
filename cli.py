@@ -3564,6 +3564,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._tool_start_time: float = 0.0  # monotonic timestamp when current tool started (for live elapsed)
         self._pending_tool_info: dict = {}  # function_name -> list of (preview, args) for stacked scrollback
         self._last_scrollback_tool: str = ""  # last tool name printed to scrollback (for "new" dedup)
+        self._turn_tools_called: list[str] = []  # unique tool names called this turn, for cost line
         self._command_running = False
         self._command_status = ""
         self._attached_images: list[Path] = []
@@ -7495,6 +7496,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._show_usage()
         elif canonical == "credits":
             self._show_credits()
+        elif canonical == "spend":
+            self._show_spend()
         elif canonical == "insights":
             self._show_insights(cmd_original)
         elif canonical == "copy":
@@ -8243,6 +8246,120 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 print(f"  ❌ Compression failed: {e}")
 
 
+
+    def _print_turn_cost_line(
+        self,
+        *,
+        pre_cost: float,
+        pre_calls: int,
+        pre_in: int,
+        pre_out: int,
+    ) -> None:
+        """Print one compact cost line after each assistant turn.
+
+        Format::
+
+            ⓘ perplexity/sonar-pro · 2 call(s) · in 1.2k / out 380 · $0.0042
+
+        When pricing is unknown we omit the cost; when the model has zero
+        token deltas (no LLM call happened — e.g. the turn was an empty
+        slash command), nothing is printed.
+        """
+        agent = getattr(self, "agent", None)
+        if agent is None:
+            return
+
+        calls = int(getattr(agent, "session_api_calls", 0) or 0) - pre_calls
+        if calls <= 0:
+            return
+
+        in_delta = int(getattr(agent, "session_input_tokens", 0) or 0) - pre_in
+        out_delta = int(getattr(agent, "session_output_tokens", 0) or 0) - pre_out
+        cost_delta = (
+            float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0)
+            - pre_cost
+        )
+        session_total = float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0)
+        status = getattr(agent, "last_call_cost_status", "unknown") or "unknown"
+        provider = getattr(agent, "last_call_provider", None) or "?"
+        model = getattr(agent, "last_call_model", None) or getattr(agent, "model", "?")
+
+        def _fmt_tokens(n: int) -> str:
+            if n >= 1000:
+                return f"{n/1000:.1f}k"
+            return str(n)
+
+        parts: list[str] = [f"{provider}/{model}"]
+
+        # Tools used this turn (populated by the tool.started event handler).
+        tools = getattr(self, "_turn_tools_called", [])
+        if tools:
+            parts.append(", ".join(tools))
+
+        parts.append(f"{calls} call{'s' if calls != 1 else ''}")
+        parts.append(f"in {_fmt_tokens(in_delta)} / out {_fmt_tokens(out_delta)}")
+
+        if status == "included":
+            parts.append("$0 included")
+        elif status == "unknown" or cost_delta <= 0:
+            parts.append("cost n/a")
+        else:
+            prefix = "~" if status == "estimated" else ""
+            parts.append(f"{prefix}${cost_delta:.4f}")
+            parts.append(f"session {prefix}${session_total:.4f}")
+
+        # 24-hour rolling total when available.
+        try:
+            db = getattr(agent, "_session_db", None)
+            if db is not None:
+                summary = db.query_spend_summary()
+                today_total = float(summary.get("today", {}).get("total_usd", 0.0) or 0.0)
+                if today_total > 0:
+                    parts.append(f"24h ${today_total:.4f}")
+        except Exception:
+            pass
+
+        line = "  ⓘ " + " · ".join(parts)
+        try:
+            self._console_print(f"[dim]{line}[/dim]")
+        except Exception:
+            print(line)
+
+    def _show_spend(self):
+        """Print today / week / month / all-time spend totals by model."""
+        agent = getattr(self, "agent", None)
+        db = getattr(agent, "_session_db", None) if agent else None
+        if db is None:
+            print("(._.) Spend log unavailable — no session DB attached.")
+            return
+        try:
+            summary = db.query_spend_summary()
+        except Exception as exc:
+            print(f"(._.) Failed to read spend log: {exc}")
+            return
+
+        def _bucket(label: str, key: str) -> None:
+            data = summary.get(key, {})
+            total = float(data.get("total_usd", 0.0) or 0.0)
+            calls = int(data.get("calls", 0) or 0)
+            print(f"  {label:<12} ${total:>10.4f}   {calls:>5} call{'s' if calls != 1 else ''}")
+            for row in data.get("by_model", [])[:5]:
+                p = row.get("provider") or "?"
+                m = row.get("model") or "?"
+                c = float(row.get("cost_usd") or 0.0)
+                n = int(row.get("calls") or 0)
+                print(f"    └─ {p}/{m:<28} ${c:>10.4f}  ({n})")
+
+        print()
+        print("  💰 Hermes spend summary")
+        print(f"  {'─' * 60}")
+        _bucket("Last 24h", "today")
+        _bucket("Last 7d",  "week")
+        _bucket("Last 30d", "month")
+        _bucket("All time", "all_time")
+        print(f"  {'─' * 60}")
+        print("  Source: hermes_state.db → spend_log")
+        print()
 
     def _show_usage(self):
         """Rate limits + session token usage (when a live agent exists) + Nous credits.
@@ -9023,6 +9140,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 label = label[:_pl - 3] + "..."
             self._spinner_text = f"{emoji} {label}"
             self._tool_start_time = time.monotonic()
+            # Record unique tool names for the turn cost line.
+            if function_name not in self._turn_tools_called:
+                self._turn_tools_called.append(function_name)
             # Store args for stacked scrollback line on completion
             self._pending_tool_info.setdefault(function_name, []).append(
                 function_args if function_args is not None else {}
@@ -13027,6 +13147,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self._agent_running = True
                     app.invalidate()  # Refresh status line
 
+                    # Reset per-turn tool list and snapshot pre-turn counters
+                    # so we can report the delta spent on THIS turn (a turn
+                    # may issue multiple LLM calls when tool-cycling).
+                    self._turn_tools_called = []
+                    _pre_cost = float(getattr(self.agent, "session_estimated_cost_usd", 0.0) or 0.0)
+                    _pre_calls = int(getattr(self.agent, "session_api_calls", 0) or 0)
+                    _pre_in = int(getattr(self.agent, "session_input_tokens", 0) or 0)
+                    _pre_out = int(getattr(self.agent, "session_output_tokens", 0) or 0)
+
                     try:
                         self.chat(user_input, images=submit_images or None)
                     finally:
@@ -13037,6 +13166,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         self._last_scrollback_tool = ""
 
                         app.invalidate()  # Refresh status line
+
+                        # Inline cost line: shown after every assistant turn.
+                        # Best-effort — never block the loop on a render error.
+                        try:
+                            self._print_turn_cost_line(
+                                pre_cost=_pre_cost,
+                                pre_calls=_pre_calls,
+                                pre_in=_pre_in,
+                                pre_out=_pre_out,
+                            )
+                        except Exception as _cost_exc:
+                            logging.debug("turn cost line render failed: %s", _cost_exc)
 
                         # Goal continuation: if a standing goal is active, ask
                         # the judge whether the turn satisfied it. If not, and

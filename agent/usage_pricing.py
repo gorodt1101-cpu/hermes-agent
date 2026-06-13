@@ -534,6 +534,67 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source="official_docs_snapshot",
         pricing_version="minimax-pricing-2026-04",
     ),
+    # ── Perplexity Sonar family ──────────────────────────────────────────
+    # Token rates only. Perplexity also charges a flat per-request fee
+    # ($5 / 1000 requests for most sonar tiers) that is NOT captured here —
+    # the request_count cost is left to whatever fixed_request_cost path
+    # the broader code already has for other providers.
+    # Source: https://docs.perplexity.ai/guides/pricing
+    (
+        "perplexity",
+        "sonar",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.00"),
+        output_cost_per_million=Decimal("1.00"),
+        request_cost=Decimal("0.005"),
+        source="official_docs_snapshot",
+        source_url="https://docs.perplexity.ai/guides/pricing",
+        pricing_version="perplexity-pricing-2026-03",
+    ),
+    (
+        "perplexity",
+        "sonar-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        request_cost=Decimal("0.005"),
+        source="official_docs_snapshot",
+        source_url="https://docs.perplexity.ai/guides/pricing",
+        pricing_version="perplexity-pricing-2026-03",
+    ),
+    (
+        "perplexity",
+        "sonar-reasoning",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.00"),
+        output_cost_per_million=Decimal("5.00"),
+        request_cost=Decimal("0.005"),
+        source="official_docs_snapshot",
+        source_url="https://docs.perplexity.ai/guides/pricing",
+        pricing_version="perplexity-pricing-2026-03",
+    ),
+    (
+        "perplexity",
+        "sonar-reasoning-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("8.00"),
+        request_cost=Decimal("0.005"),
+        source="official_docs_snapshot",
+        source_url="https://docs.perplexity.ai/guides/pricing",
+        pricing_version="perplexity-pricing-2026-03",
+    ),
+    (
+        "perplexity",
+        "sonar-deep-research",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("8.00"),
+        request_cost=Decimal("0.005"),
+        source="official_docs_snapshot",
+        source_url="https://docs.perplexity.ai/guides/pricing",
+        pricing_version="perplexity-pricing-2026-03",
+    ),
 }
 
 

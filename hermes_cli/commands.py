@@ -215,6 +215,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True),
     CommandDef("usage", "Show token usage and rate limits for the current session", "Info"),
     CommandDef("credits", "Show Nous credit balance and top up", "Info"),
+    CommandDef("spend", "Show Hermes spend totals (24h / 7d / 30d / all time) by model", "Info"),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",

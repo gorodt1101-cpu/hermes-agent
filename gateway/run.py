@@ -2954,6 +2954,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self.adapters.pop(adapter.platform, None)
                 self.delivery_router.adapters = self.adapters
 
+        if not self._running or getattr(self, "_draining", False):
+            logger.info(
+                "%s adapter error occurred during gateway shutdown; "
+                "skipping background reconnect",
+                adapter.platform.value,
+            )
+            return
+
         # Queue retryable failures for background reconnection
         if adapter.fatal_error_retryable:
             platform_config = self.config.platforms.get(adapter.platform)

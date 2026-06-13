@@ -407,6 +407,12 @@ class TestOpenRouterProfile:
         assert tl == {"verbosity": "high"}
 
 
+class TestPerplexityProfile:
+    def test_tools_disabled(self):
+        p = get_provider_profile("perplexity")
+        assert p.supports_tools is False
+
+
 class TestNousProfile:
     def test_tags(self):
         from agent.portal_tags import nous_portal_tags

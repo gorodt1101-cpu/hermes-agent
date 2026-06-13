@@ -64,6 +64,7 @@ class ProviderProfile:
     # Falls back to model-catalog lookup when False and the provider
     # has no registered profile.
     supports_vision: bool = False
+    supports_tools: bool = True
 
     # True when the provider's API accepts list-type tool message
     # content (multipart with image_url parts).  Defaults to True for

@@ -638,6 +638,16 @@ class AIAgent:
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
+
+        # Per-call snapshot (last LLM API call only) — read by cli.py to
+        # render the inline cost line after each assistant turn.
+        self.last_call_cost_usd = None
+        self.last_call_cost_status = "unknown"
+        self.last_call_cost_source = "none"
+        self.last_call_provider = None
+        self.last_call_model = None
+        self.last_call_input_tokens = 0
+        self.last_call_output_tokens = 0
         
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0

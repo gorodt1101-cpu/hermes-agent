@@ -498,8 +498,10 @@ class ChatCompletionsTransport(ProviderTransport):
         if timeout is not None:
             api_kwargs["timeout"] = timeout
 
-        # Tools — apply Moonshot/Kimi schema sanitization regardless of path
-        if tools:
+        # Tools — apply Moonshot/Kimi schema sanitization regardless of path.
+        # Some OpenAI-compatible search providers (Perplexity sonar) reject
+        # tool schemas entirely; their own web search is built into the model.
+        if tools and getattr(profile, "supports_tools", True):
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools

@@ -265,6 +265,22 @@ class TestChatCompletionsBuildKwargs:
         # Nous rejects enabled=false; reasoning omitted entirely
         assert "reasoning" not in kw.get("extra_body", {})
 
+    def test_perplexity_profile_omits_tools(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("perplexity")
+        msgs = [{"role": "user", "content": "Найди свежий курс доллара"}]
+        tools = [{"type": "function", "function": {"name": "web_search", "parameters": {}}}]
+
+        kw = transport.build_kwargs(
+            model="sonar-pro",
+            messages=msgs,
+            tools=tools,
+            provider_profile=profile,
+        )
+
+        assert "tools" not in kw
+        assert kw["extra_body"]["return_citations"] is True
+
     def test_ollama_num_ctx(self, transport):
         from providers import get_provider_profile
         profile = get_provider_profile("custom")
