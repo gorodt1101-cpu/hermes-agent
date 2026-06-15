@@ -354,6 +354,14 @@ def _build_gateway_cmd_script(
     rewriting PATH tends to break Homebrew/nvm-style installations.
     """
     lines = ["@echo off", f"rem {_TASK_DESCRIPTION}"]
+    # The wrapper is written as UTF-8 but cmd.exe reads batch files in the
+    # console OEM code page (e.g. cp866 on Russian Windows). When the install
+    # path contains non-ASCII characters, a login-time cmd.exe console at the
+    # default OEM code page misreads the path below and the gateway never
+    # starts. Switch the console to UTF-8 first so subsequent lines (and the
+    # non-ASCII paths in them) are decoded correctly. ASCII-only lines above
+    # this point are read identically under any code page.
+    lines.append("chcp 65001>nul")
     lines.append(f"cd /d {_quote_cmd_script_arg(working_dir)}")
     lines.append(f'set "HERMES_HOME={hermes_home}"')
     lines.append('set "PYTHONIOENCODING=utf-8"')
