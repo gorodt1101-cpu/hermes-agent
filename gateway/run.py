@@ -358,6 +358,70 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
+def _format_gateway_turn_spend_footer(
+    agent: Any,
+    *,
+    pre_cost: float,
+    pre_calls: int,
+    pre_in: int,
+    pre_out: int,
+    used_tools: Optional[List[str]] = None,
+) -> str:
+    """Return a compact per-turn model/tool/cost footer for messaging platforms."""
+    if agent is None:
+        return ""
+
+    calls = int(getattr(agent, "session_api_calls", 0) or 0) - int(pre_calls or 0)
+    if calls <= 0:
+        return ""
+
+    in_delta = int(getattr(agent, "session_input_tokens", 0) or 0) - int(pre_in or 0)
+    out_delta = int(getattr(agent, "session_output_tokens", 0) or 0) - int(pre_out or 0)
+    cost_delta = (
+        float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0)
+        - float(pre_cost or 0.0)
+    )
+    status = getattr(agent, "last_call_cost_status", "unknown") or "unknown"
+    provider = getattr(agent, "last_call_provider", None) or getattr(agent, "provider", None) or "?"
+    model = getattr(agent, "last_call_model", None) or getattr(agent, "model", None) or "?"
+
+    def _fmt_tokens(n: int) -> str:
+        if n >= 1000:
+            return f"{n / 1000:.1f}k"
+        return str(max(0, n))
+
+    tools = [str(t) for t in (used_tools or []) if str(t or "").strip()]
+    parts = [
+        f"model: {provider}/{model}",
+        f"tools: {', '.join(tools) if tools else 'none'}",
+        f"{calls} call{'s' if calls != 1 else ''}",
+        f"in {_fmt_tokens(in_delta)} / out {_fmt_tokens(out_delta)}",
+    ]
+
+    if status == "included":
+        parts.append("cost: $0 included")
+    elif status == "unknown" or cost_delta <= 0:
+        parts.append("cost: n/a")
+    else:
+        prefix = "~" if status == "estimated" else ""
+        parts.append(f"cost: {prefix}${cost_delta:.4f}")
+
+    try:
+        db = getattr(agent, "_session_db", None)
+        if db is not None:
+            summary = db.query_spend_summary()
+            today_total = float(summary.get("today", {}).get("total_usd", 0.0) or 0.0)
+            all_time_total = float(summary.get("all_time", {}).get("total_usd", 0.0) or 0.0)
+            if today_total > 0:
+                parts.append(f"24h: ${today_total:.4f}")
+            if all_time_total > 0:
+                parts.append(f"total: ${all_time_total:.4f}")
+    except Exception:
+        pass
+
+    return "Usage: " + " | ".join(parts)
+
+
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery."""
     text = str(message or "").strip()
@@ -13265,9 +13329,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # several tools exceed the threshold.
         long_tool_hint_fired = [False]
         _LONG_TOOL_THRESHOLD_S = 30.0
+        used_tools_this_turn: List[str] = []
 
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
+            if event_type == "tool.started" and tool_name and _run_still_current():
+                _tool = str(tool_name)
+                if _tool not in used_tools_this_turn:
+                    used_tools_this_turn.append(_tool)
+
             if not progress_queue or not _run_still_current():
                 return
 
@@ -13889,6 +13959,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # session_key is now set via contextvars in _set_session_env()
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
+            _pre_cost = 0.0
+            _pre_calls = 0
+            _pre_in = 0
+            _pre_out = 0
 
             # Read from env var or use default (same as CLI)
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
@@ -14114,7 +14188,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
-            agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
+            # Always attach the callback so we can record which tools ran for
+            # the per-turn spend footer.  When progress messages are disabled,
+            # progress_callback records the tool name and returns before sending.
+            agent.tool_progress_callback = progress_callback
             # Discord voice verbal-ack hook (fires once per turn on first tool
             # call; armed only when in a voice channel with the mixer running).
             agent.tool_start_callback = (
@@ -14556,6 +14633,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 }
                 if observed_group_context:
                     _conversation_kwargs["persist_user_message"] = message
+                _pre_cost = float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0)
+                _pre_calls = int(getattr(agent, "session_api_calls", 0) or 0)
+                _pre_in = int(getattr(agent, "session_input_tokens", 0) or 0)
+                _pre_out = int(getattr(agent, "session_output_tokens", 0) or 0)
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:
                 unregister_gateway_notify(_approval_session_key)
@@ -14748,6 +14829,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception:
                     pass
 
+            _spend_footer_added = False
+            try:
+                spend_footer = _format_gateway_turn_spend_footer(
+                    agent,
+                    pre_cost=_pre_cost,
+                    pre_calls=_pre_calls,
+                    pre_in=_pre_in,
+                    pre_out=_pre_out,
+                    used_tools=used_tools_this_turn,
+                )
+                if spend_footer and spend_footer not in final_response:
+                    final_response = final_response.rstrip() + "\n\n" + spend_footer
+                    _spend_footer_added = True
+            except Exception as _spend_footer_exc:
+                logger.debug("Gateway spend footer render failed: %s", _spend_footer_exc)
+
             return {
                 "final_response": final_response,
                 "last_reasoning": result.get("last_reasoning"),
@@ -14767,7 +14864,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "context_length": _context_length,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
-                "response_transformed": result.get("response_transformed", False),
+                "response_transformed": bool(
+                    result.get("response_transformed", False) or _spend_footer_added
+                ),
             }
         
         # Start progress message sender if enabled
