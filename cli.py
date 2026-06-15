@@ -8259,7 +8259,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         Format::
 
-            ⓘ perplexity/sonar-pro · 2 call(s) · in 1.2k / out 380 · $0.0042
+            ⓘ perplexity/sonar-pro · web_search · 2 call(s) · in 1.2k / out 380 · ~$0.0042 · session ~$0.0042 · 24h $0.0042 · total $0.1234
 
         When pricing is unknown we omit the cost; when the model has zero
         token deltas (no LLM call happened — e.g. the turn was an empty
@@ -8308,7 +8308,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             parts.append(f"{prefix}${cost_delta:.4f}")
             parts.append(f"session {prefix}${session_total:.4f}")
 
-        # 24-hour rolling total when available.
+        # 24-hour rolling total + all-time total when available.
         try:
             db = getattr(agent, "_session_db", None)
             if db is not None:
@@ -8316,6 +8316,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 today_total = float(summary.get("today", {}).get("total_usd", 0.0) or 0.0)
                 if today_total > 0:
                     parts.append(f"24h ${today_total:.4f}")
+                all_time_total = float(summary.get("all_time", {}).get("total_usd", 0.0) or 0.0)
+                if all_time_total > 0:
+                    parts.append(f"total ${all_time_total:.4f}")
         except Exception:
             pass
 
